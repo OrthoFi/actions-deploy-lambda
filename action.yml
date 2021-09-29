@@ -1,0 +1,93 @@
+name: Deploy Lambda Application
+inputs:
+  app-name:
+    description: Name of the application (patient, user, etc.)
+    required: true
+  app-env-name:
+    description: Name of the environment to deploy to (heart, dev, etc.)
+    required: true
+  aws-dev-build-role:
+    description: secrets.OCKERS_BUILD_ROLE
+    required: true
+  aws-production-build-role:
+    description: secrets.PRODUCTION_BUILD_ROLE
+    required: true
+  aws-access-key-id:
+    description: secrets.BUILD_AWS_ACCESS_KEY_ID
+    required: true
+  aws-secret-access-key:
+    description: secrets.BUILD_AWS_SECRET_ACCESS_KEY
+    required: true
+  sentry-auth-token:
+    description: secrets.SENTRY_AUTH_TOKEN
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Tools
+      shell: pwsh
+      run: dotnet tool install -g Amazon.Lambda.Tools
+
+    - name: Set S3 Bucket
+      id: s3-bucket
+      uses: orthofi/actions-set-s3-bucket@v1
+      with:
+        environment-name: ${{ inputs.app-env-name }}
+
+    - name: Set AWS Role
+      id: set-role
+      uses: orthofi/actions-set-build-role@v1
+      with:
+        production-role: ${{ inputs.aws-production-build-role }}
+        dev-role: ${{ inputs.aws-dev-build-role }}
+        environment-name: ${{ inputs.app-env-name }}
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        aws-region: us-east-1
+        role-to-assume: ${{ steps.set-role.outputs.build-role }}
+
+    - name: Login to Amazon ECR
+      id: ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - uses: actions/checkout@v2
+      with:
+        fetch-depth: 1
+        ref: ${{ github.ref }}
+
+    - name: Get Image Uri
+      id: image
+      shell: pwsh
+      run: |
+        $number = $(ConvertFrom-Json((aws sts get-caller-identity) -join '')).Account
+        $uri = "${number}.dkr.ecr.us-east-1.amazonaws.com/service-${{ inputs.app-name }}:sha-$(git rev-parse --short=7 HEAD)"
+        Write-Host "::set-output name=uri::$uri"
+
+    - name: Deploy
+      shell: pwsh
+      env:
+        IMAGE_URI: ${{ steps.image.outputs.uri }}
+      run: |
+        sam deploy -t Lambdas/template.yml `
+          --s3-bucket ${{ steps.s3-bucket.outputs.name }} `
+          --s3-prefix ${{ inputs.app-env-name}}/${{ inputs.app-name }}/ `
+          --stack-name ${{ inputs.app-env-name }}-${{ inputs.app-name }} `
+          --image-repository "${{ env.IMAGE_URI }}" `
+          --parameter-overrides "EnvironmentName=${{ inputs.app-env-name }} ImageUri=${{ env.IMAGE_URI }}" `
+          --capabilities CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND `
+          --no-fail-on-empty-changeset
+
+    - name: Create Sentry release
+      uses: getsentry/action-release@v1
+      env:
+        SENTRY_AUTH_TOKEN: ${{ inputs.sentry-auth-token }}
+        SENTRY_ORG: orthofi
+        SENTRY_PROJECT: service-${{ inputs.app-name }}
+      with:
+        environment: ${{ inputs.app-env-name }}
+        version: ${{ github.sha }}
