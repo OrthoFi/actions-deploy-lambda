@@ -65,7 +65,7 @@ runs:
       shell: pwsh
       run: |
         $number = $(ConvertFrom-Json((aws sts get-caller-identity) -join '')).Account
-        $uri = "${number}.dkr.ecr.us-east-1.amazonaws.com/service-${{ inputs.app-name }}:sha-$(git rev-parse --short=7 HEAD)"
+        $uri = "${number}.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.app-name }}-lambda:sha-$(git rev-parse --short=7 HEAD)"
         Write-Host "::set-output name=uri::$uri"
 
     - name: Deploy
