@@ -43,10 +43,10 @@ Wait-For-Ready
 
 aws lambda update-function-configuration --function-name $FunctionName --image-config Command=$Command
 
-aws lambda tag-resource --resource $FunctionName --tags "version=sha-$Sha"
-
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
 Wait-For-Ready
+
+aws lambda tag-resource --resource "arn:aws:lambda:us-east-1:${number}:function:$FunctionName" --tags "version=sha-$Sha"
