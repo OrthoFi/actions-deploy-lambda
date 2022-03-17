@@ -1,0 +1,125 @@
+name: Deploy
+on:
+  workflow_call:
+    inputs:
+      app-domain:
+        description: Name of the domain e.g. patient, practice, user
+        required: true
+        type: string
+
+      app-env-name:
+        description: Name of the environment to deploy e.g. dev, risk, production
+        required: true
+        type: string
+
+      app-lambda-command:
+        description: Command string to run for the current image uri e.g. "OrthoFi.Billing.Lambdas::OrthoFi.Billing.Lambdas.AssessLateFeeLambda::Handle"
+        required: true
+        type: string
+
+      app-lambda-name:
+        description: Name of the lambda e.g. assessLateFee or integrationEvents
+        required: true
+        type: string
+
+      image-name:
+        description: Name of the image e.g. patient-lambda, practice-lambda, user-lambda
+        required: true
+        type: string
+
+    secrets:
+      aws-access-key-id:
+        description: secrets.BUILD_AWS_ACCESS_KEY_ID
+        required: true
+
+      aws-dev-build-role:
+        description: secrets.OCKERS_BUILD_ROLE
+        required: true
+
+      aws-production-build-role:
+        description: secrets.PRODUCTION_BUILD_ROLE
+        required: true
+
+      aws-secret-access-key:
+        description: secrets.BUILD_AWS_SECRET_ACCESS_KEY
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}-lambda
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
+
+      - name: Set AWS Role
+        id: set-role
+        uses: orthofi/actions-set-build-role@v1
+        with:
+          production-role: ${{ secrets.aws-production-build-role }}
+          dev-role: ${{ secrets.aws-dev-build-role }}
+          environment-name: ${{ inputs.app-env-name }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.aws-access-key-id }}
+          aws-secret-access-key: ${{ secrets.aws-secret-access-key }}
+          aws-region: us-east-1
+          role-to-assume: ${{ steps.set-role.outputs.build-role }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Determine SHA
+        id: sha
+        shell: pwsh
+        run: |
+          if($(git log -1 --pretty=%B)[0].StartsWith("chore(release)")) {
+            Write-Host "::set-output name=sha::$(git rev-parse HEAD^)"
+          }
+          else {
+            Write-Host "::set-output name=sha::${{ github.sha }}"
+          }
+
+      - name: Deploy
+        shell: pwsh
+        env:
+          FUNCTION_NAME: ${{ inputs.app-env-name }}-${{ inputs.app-domain }}-${{ inputs.app-lambda-name }}
+        run: |
+          function Wait-For-Ready {
+              do {
+                  Start-Sleep 5
+                  $function = ConvertFrom-Json($($(aws lambda get-function --function-name ${{ env.FUNCTION_NAME }}) -join ''))
+                  if ($function.Configuration.LastUpdateStatus -eq "InProgress") {
+                      Write-Host "Function update is still in progress"
+                  }
+                  else {
+                      Write-Host "Last Update Status: $($function.Configuration.LastUpdateStatus)"
+                  }
+              } while ($function.Configuration.LastUpdateStatus -eq "InProgress")
+          }
+
+          $number = $(ConvertFrom-Json((aws sts get-caller-identity) -join '')).Account
+          $uri = "${number}.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.image-name }}:sha-${{ steps.sha.outputs.sha }}"
+
+          aws lambda update-function-code --function-name ${{ env.FUNCTION_NAME }} --image-uri $uri
+
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
+
+          Wait-For-Ready
+
+          aws lambda update-function-configuration --function-name ${{ env.FUNCTION_NAME }} --image-config Command=${{ inputs.app-lambda-command }}
+
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
+
+          Wait-For-Ready
+
+          aws lambda tag-resource --resource "arn:aws:lambda:us-east-1:${number}:function:${{ env.FUNCTION_NAME }}" --tags "version=sha-${{ steps.sha.outputs.sha }}"
