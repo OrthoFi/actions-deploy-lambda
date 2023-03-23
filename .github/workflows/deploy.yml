@@ -2,23 +2,13 @@ name: Deploy
 on:
   workflow_call:
     inputs:
-      app-domain:
-        description: Name of the domain e.g. patient, practice, user
-        required: true
-        type: string
-
-      app-env-name:
-        description: Name of the environment to deploy e.g. dev, risk, production
-        required: true
-        type: string
-
-      app-lambda-command:
+      command:
         description: Command string to run for the current image uri e.g. "OrthoFi.Billing.Lambdas::OrthoFi.Billing.Lambdas.AssessLateFeeLambda::Handle"
         required: true
         type: string
 
-      app-lambda-name:
-        description: Name of the lambda e.g. assessLateFee or integrationEvents
+      environment:
+        description: Name of the environment to deploy e.g. dev, risk, production
         required: true
         type: string
 
@@ -27,48 +17,28 @@ on:
         required: true
         type: string
 
-    secrets:
-      aws-access-key-id:
-        description: secrets.BUILD_AWS_ACCESS_KEY_ID
+      lambda-name:
+        description: Name of the lambda e.g. assessLateFee or integrationEvents
         required: true
-
-      aws-dev-build-role:
-        description: secrets.OCKERS_BUILD_ROLE
-        required: true
-
-      aws-production-build-role:
-        description: secrets.PRODUCTION_BUILD_ROLE
-        required: true
-
-      aws-secret-access-key:
-        description: secrets.BUILD_AWS_SECRET_ACCESS_KEY
-        required: true
+        type: string
 
 jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}-lambda
+    environment: ${{ inputs.environment }}-lambda
     steps:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 2
 
-      - name: Set AWS Role
-        id: set-role
-        uses: orthofi/actions-set-build-role@v1
-        with:
-          production-role: ${{ secrets.aws-production-build-role }}
-          dev-role: ${{ secrets.aws-dev-build-role }}
-          environment-name: ${{ inputs.app-env-name }}
-
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
-          aws-access-key-id: ${{ secrets.aws-access-key-id }}
-          aws-secret-access-key: ${{ secrets.aws-secret-access-key }}
+          aws-access-key-id: ${{ secrets.BUILD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.BUILD_AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-          role-to-assume: ${{ steps.set-role.outputs.build-role }}
+          role-to-assume: ${{ vars.AWS_BUILD_ROLE }}
 
       - name: Login to Amazon ECR
         id: ecr
@@ -90,7 +60,7 @@ jobs:
       - name: Deploy
         shell: pwsh
         env:
-          FUNCTION_NAME: ${{ inputs.app-env-name }}-${{ inputs.app-domain }}-${{ inputs.app-lambda-name }}
+          FUNCTION_NAME: ${{ inputs.environment }}-${{ inputs.lambda-name }}
         run: |
           function Wait-For-Ready {
               do {
@@ -116,7 +86,7 @@ jobs:
 
           Wait-For-Ready
 
-          aws lambda update-function-configuration --function-name ${{ env.FUNCTION_NAME }} --image-config Command=${{ inputs.app-lambda-command }}
+          aws lambda update-function-configuration --function-name ${{ env.FUNCTION_NAME }} --image-config Command=${{ inputs.command }}
 
           if ($LASTEXITCODE -ne 0) {
               exit $LASTEXITCODE
