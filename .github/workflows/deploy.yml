@@ -76,7 +76,7 @@ jobs:
           }
 
           $number = $(ConvertFrom-Json((aws sts get-caller-identity) -join '')).Account
-          $uri = "${number}.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.image-name }}:sha-${{ steps.sha.outputs.sha }}"
+          $uri = "655438670330.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.image-name }}:sha-${{ steps.sha.outputs.sha }}"
 
           aws lambda update-function-code --function-name ${{ env.FUNCTION_NAME }} --image-uri $uri
 
